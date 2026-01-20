@@ -317,6 +317,39 @@ class Network:
             msg = f"Network has no attribute '{key}'."
             logger.error(msg)
             raise KeyError(msg)
+        
+    def _add_subsystems(self, prefix: str, *args):
+        r"""
+        Add one or more subsystems to the network.
+
+        Parameters
+        ----------
+        prefix : str
+            Prefix to be added to the subsystem labels.
+        c : tespy.components.subsystem.Subsystem
+            The subsystem to be added to the network, subsystem objects si
+            :code:`network._add_subsystems(label, s1, s2, s3, ...)`.
+        """
+        # check for dot notation in prefix
+        if not prefix.endswith('.') and len(prefix) > 0:
+            prefix += '.'
+        for subsystem in args:
+            full_label = f"{prefix}{subsystem.label}"
+            if full_label in self.subsystems:
+                msg = (
+                    'There is already a subsystem with the label '
+                    f'{full_label}. The labels must be unique!'
+                )
+                logger.error(msg)
+                raise ValueError(msg)
+
+            self.subsystems[full_label] = subsystem
+
+            for c in subsystem.conns.values():
+                self.add_conns(c)
+
+            # Recursive call to create dot notation for subsystems inside subsystems
+            self._add_subsystems(full_label, *subsystem.subsystems.values())
 
     def add_subsystems(self, *args):
         r"""
@@ -328,19 +361,7 @@ class Network:
             The subsystem to be added to the network, subsystem objects si
             :code:`network.add_subsystems(s1, s2, s3, ...)`.
         """
-        for subsystem in args:
-            if subsystem.label in self.subsystems:
-                msg = (
-                    'There is already a subsystem with the label '
-                    f'{subsystem.label}. The labels must be unique!'
-                )
-                logger.error(msg)
-                raise ValueError(msg)
-
-            self.subsystems[subsystem.label] = subsystem
-
-            for c in subsystem.conns.values():
-                self.add_conns(c)
+        self._add_subsystems("", *args)
 
     def del_subsystems(self, *args):
         r"""
@@ -374,11 +395,19 @@ class Network:
             Subsystem objectt with specified label, None if no Subsystem of
             the network has this label.
         """
+        # Allow for dot notation when accessing subsystems inside other subsystems
+        la = label.split(".")
+        sub_label = la[0]
         try:
-            return self.subsystems[label]
+            sub = self.subsystems[sub_label]
         except KeyError:
-            logger.warning(f"Subsystem with label {label} not found.")
+            logger.warning(f"Subsystem with label {sub_label} not found.")
             return None
+        if len(la) == 1:
+            return sub
+        else:
+            rest_label = ".".join(la[1:])
+            return sub.get_subsystem(rest_label)
 
     def get_conn(self, label):
         r"""

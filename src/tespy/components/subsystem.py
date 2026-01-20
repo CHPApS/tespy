@@ -122,6 +122,7 @@ class Subsystem:
 
         self.comps = {}
         self.conns = {}
+        self.subsystems = {}
 
         if not hasattr(self, "num_in"):
             msg = (
@@ -157,6 +158,81 @@ class Subsystem:
 
         self.create_network()
 
+
+    def add_subsystems(self, *args):
+        r"""
+        Add one or more subsystems to this subsystem.
+
+        Parameters
+        ----------
+        c : tespy.components.subsystem.Subsystem
+            The subsystem to be added to this subsystem, subsystem objects si
+            :code:`subsystem.add_subsystems(s1, s2, s3, ...)`.
+        """
+        for subsystem in args:
+            if subsystem.label in self.subsystems:
+                msg = (
+                    'There is already a subsystem with the label '
+                    f'{subsystem.label}. The labels must be unique!'
+                )
+                logger.error(msg)
+                raise ValueError(msg)
+
+            self.subsystems[subsystem.label] = subsystem
+
+
+    def del_subsystems(self, *args):
+        r"""
+        Delete one or more subsystems from this subsystem.
+
+        Parameters
+        ----------
+        c : tespy.components.subsystem.Subsystem
+            The subsystem to be deleted from this subsystem, subsystem objects si
+            :code:`subsystem.del_subsystems(s1, s2, s3, ...)`.
+        """
+        for subsystem in args:
+            if subsystem.label not in self.subsystems:
+                msg = (
+                    'There is no subsystem with the label '
+                    f'{subsystem.label}. Cannot delete nonexistent subsystem.'
+                )
+                logger.error(msg)
+                raise ValueError(msg)
+
+            del self.subsystems[subsystem.label]
+
+
+    def get_subsystem(self, label):
+        r"""
+        Get Subsystem via label.
+
+        Parameters
+        ----------
+        label : str
+            Label of the Subsystem object.
+
+        Returns
+        -------
+        tespy.components.subsystem.Subsystem
+            Subsystem objectt with specified label, None if no Subsystem of
+            the network has this label.
+        """
+        # Allow for dot notation when accessing subsystems inside other subsystems
+        la = label.split(".")
+        sub_label = la[0]
+        try:
+            sub = self.subsystems[sub_label]
+        except KeyError:
+            logger.warning(f"Subsystem with label {sub_label} not found.")
+            return None
+        if len(la) == 1:
+            return sub
+        else:
+            rest_label = ".".join(la[1:])
+            return sub.get_subsystem(rest_label)
+
+
     def add_conns(self, *args):
 
         for conn in args:
@@ -168,9 +244,10 @@ class Subsystem:
                 )
                 raise TESPyComponentError(msg)
             self.conns[conn.label] = conn
-            self.conns[conn.label].label = f"{self.label}_{conn.label}"
+            # self.conns[conn.label].label = f"{self.label}_{conn.label}"
 
         self._add_comps(*args)
+
 
     def _add_comps(self, *args):
         # get unique components in new connections and remove existing ones
@@ -184,7 +261,7 @@ class Subsystem:
                 raise TESPyComponentError(msg)
 
             self.comps[comp.label] = comp
-            self.comps[comp.label].label = f"{self.label}_{comp.label}"
+            # self.comps[comp.label].label = f"{self.label}_{comp.label}"
 
     def get_conn(self, label):
 
