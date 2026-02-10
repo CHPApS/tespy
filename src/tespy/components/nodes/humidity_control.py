@@ -10,12 +10,14 @@ available from its original location tespy/components/nodes/humidity_control.py
 SPDX-License-Identifier: MIT
 """
 
+from venv import logger
 from tespy.components.component import component_registry
 from tespy.components.nodes.base import NodeBase
 from tespy.tools.data_containers import ComponentMandatoryConstraints as dc_cmc
 from tespy.tools.data_containers import SimpleDataContainer as dc_simple
 from tespy.tools.fluid_properties import dT_mix_dph
 from tespy.tools.fluid_properties import dT_mix_pdh
+from tespy.tools.fluid_properties.mixtures import w_mix_fluid_data
 
 # from tespy.tools.fluid_properties import dT_mix_ph_dfluid
 
@@ -35,25 +37,16 @@ class HumidityControl(NodeBase):
     Inlets/Outlets
 
     - in1: inlet with humid air
+    - in2: inlet of liquid water or ice
     - out1: outlet with humid air
     - out2: outlet of liquid water or ice 
 
-    Image
-
-    .. image:: /api/_images/Splitter.svg
-       :alt: flowsheet of the splitter
-       :align: center
-       :class: only-light
-
-    .. image:: /api/_images/Splitter_darkmode.svg
-       :alt: flowsheet of the splitter
-       :align: center
-       :class: only-dark
-
     Note
     ----
-    Fluid separation requires power and cooling, equations have not been
-    implemented, yet!
+    Fluid separation does not affect the energy balance since all properties
+    are calculated with respect to the dry air mass flow. However, if water is
+    added to the *unsaturated* humid air flow, the outlet enthalpy of the humid
+    air flow will be higher than the inlet enthalpy.
 
     Parameters
     ----------
@@ -81,8 +74,11 @@ class HumidityControl(NodeBase):
     printout : boolean
         Include this component in the network's results printout.
 
-    num_out : float, dict
-        Number of outlets for this component, default value: 2.
+    h2o_in : boolean
+        Set to ``True`` if water is added to the humid air flow.
+
+    h2o_out : boolean
+        Set to ``True`` if water is removed from the humid air flow.
 
     Example
     -------
@@ -134,60 +130,116 @@ class HumidityControl(NodeBase):
     0.65
     """
 
-    @staticmethod
-    def get_parameters():
-        return {'num_out': dc_simple(description="number of outlets")}
+    def __init__(self, label, **kwargs):
+        # We cannot add water for now, this needs a different way of
+        # propagating the fluid wrapper.
+        if "h2o_in" in kwargs and kwargs["h2o_in"]:
+            msg = "Adding water to the humid air flow is currently not supported."
+            raise NotImplementedError(msg)
+        super().__init__(label, **kwargs)
 
-    def _update_num_eq(self):
-        self.variable_fluids = set(
-            [fluid for c in self.inl + self.outl for fluid in c.fluid.is_var]
-        )
-        num_fluid_eq = len(self.variable_fluids)
-        if num_fluid_eq == 0:
-            num_fluid_eq = 1
-            self.variable_fluids = [list(self.inl[0].fluid.is_set)[0]]
+    def set_attr(self, **kwargs):
+        # We cannot add water for now, this needs a different way of
+        # propagating the fluid wrapper.
+        if "h2o_in" in kwargs and kwargs["h2o_in"]:
+            msg = "Adding water to the humid air flow is currently not supported."
+            raise NotImplementedError(msg)
+        super().set_attr(**kwargs)
 
-        self.constraints["fluid_constraints"].num_eq = num_fluid_eq
+    def get_parameters(self):
+        params = NodeBase.get_parameters(self)
+        params.update({
+            'h2o_in': dc_simple(
+                val=False,
+                description="set to True if water is added to the humid air flow"
+            ),
+            'h2o_out': dc_simple(
+                val=False,
+                description="set to True if water is removed from the humid air flow"
+            )
+        })
+        return params
+    
+    def dry_air_mass_flow_func(self):
+        r"""
+        Calculate the residual value for dry air mass flow balance equation.
+
+        Returns
+        -------
+        res : float
+            Residual value of equation.
+
+            .. math::
+
+                0 = \dot{m}_{in,1} - \dot{m}_{out,1}
+        """
+        res = 0
+        for i in self.inl[:1]:
+            res += i.m.val_SI
+        for o in self.outl[:1]:
+            res -= o.m.val_SI
+        return res
+
+    def dry_air_mass_flow_dependents(self):
+        return [c.m for c in self.inl[:1] + self.outl[:1]]
+
+    # def _update_num_eq(self):
+    #     self.variable_fluids = set(
+    #         [fluid for c in self.inl + self.outl for fluid in c.fluid.is_var]
+    #     )
+    #     num_fluid_eq = len(self.variable_fluids)
+    #     if num_fluid_eq == 0:
+    #         num_fluid_eq = 1
+    #         self.variable_fluids = [list(self.inl[0].fluid.is_set)[0]]
+
+    #     self.constraints["fluid_constraints"].num_eq = num_fluid_eq
 
     def get_mandatory_constraints(self):
-        return {
+        cmc = super().get_mandatory_constraints()
+        # overwrite the mass flow balance constraint of the base class 
+        # with a dry air mass flow balance constraint
+        cmc.update({
             'mass_flow_constraints': dc_cmc(**{
                 'num_eq_sets': 1,
-                'func': self.mass_flow_func,
-                'dependents': self.mass_flow_dependents,
-                'description': 'mass balance constraint'
-            }),
+                'func': self.dry_air_mass_flow_func,
+                'dependents': self.dry_air_mass_flow_dependents,
+                'description': 'dry air mass balance constraint'
+            })
+        })
+        # overwrite the generic fluid balance constraint of the base class
+        # with a water balance constraint since dry air is handled by the
+        # mass flow balance constraint already
+        cmc.update({
             'fluid_constraints': dc_cmc(**{
-                'num_eq_sets': self.num_o,
-                'func': self.fluid_func,
-                'deriv': self.fluid_deriv,
-                'dependents': self.fluid_dependents,
-                'description': 'fluid mass fraction balance constraints'
-            }),
-            'energy_balance_constraints': dc_cmc(**{
-                'num_eq_sets': self.num_o,
-                'func': self.energy_balance_func,
-                'deriv': self.energy_balance_deriv,
-                'dependents': self.energy_balance_dependents,
-                'description': 'equal temperature at all outlets constraints'
-            }),
+                'num_eq_sets': 1,
+                'func': self.water_fluid_func,
+                'dependents': self.water_fluid_dependents,
+                'description': 'water mass fraction balance constraints'
+            })
+        })
+        # cmc.update({
+        #     'energy_balance_constraints': dc_cmc(**{
+        #         'num_eq_sets': self.num_o,
+        #         'func': self.energy_balance_func,
+        #         'deriv': self.energy_balance_deriv,
+        #         'dependents': self.energy_balance_dependents,
+        #         'description': 'equal temperature at all outlets constraints'
+        #     })
+        # })
+        cmc.update({
             'pressure_constraints': dc_cmc(**{
                 'num_eq_sets': self.num_o,
                 'structure_matrix': self.pressure_structure_matrix,
                 'description': 'pressure equality constraints'
             })
-        }
+        })
+        return cmc
 
-    @staticmethod
-    def inlets():
-        return ['in1']
+    def inlets(self):
+        return ['in1'] + (['in2'] if self.h2o_in.val else [])
 
     def outlets(self):
-        if self.num_out.is_set:
-            return [f'out{i + 1}' for i in range(self.num_out.val)]
-        else:
-            self.set_attr(num_out=2)
-            return self.outlets()
+        return ['out1'] + (['out2'] if self.h2o_out.val else [])
 
     def propagate_wrapper_to_target(self, branch):
         branch["components"] += [self]
@@ -195,7 +247,7 @@ class HumidityControl(NodeBase):
             branch["connections"] += [outconn]
             outconn.target.propagate_wrapper_to_target(branch)
 
-    def fluid_func(self):
+    def water_fluid_func(self):
         r"""
         Calculate the vector of residual values for fluid balance equations.
 
@@ -206,119 +258,124 @@ class HumidityControl(NodeBase):
 
             .. math::
 
-                0 = \dot{m}_{in} \cdot x_{fl,in} - \dot {m}_{out,j}
-                \cdot x_{fl,out,j}\\
-                \forall fl \in \text{network fluids,}
-                \; \forall j \in \text{outlets}
+                0 = \dot{m}_{in,1} \cdot w_{in,1}
+                  + \dot{mH2O}_{in,1}
+                  + \dot{m}_{in,2}
+                  - \dot {m}_{out,1} \cdot w_{out,1}
+                  - \dot{mH2O}_{out,1}
+                  - \dot{m}_{out,2}
         """
-        i = self.inl[0]
-        residual = []
-        for fluid in self.variable_fluids:
-            res = i.fluid.val[fluid] * i.m.val_SI
-            for o in self.outl:
-                res -= o.fluid.val[fluid] * o.m.val_SI
-            residual += [res]
+        residual = 0.0
+        # residual += self.inl[0].m.val_SI * self.inl[0].w.val_SI
+        # residual += self.inl[0].mH2O.val_SI
+        w_mixture_in = w_mix_fluid_data(self.inl[0].fluid_data)
+        residual += self.inl[0].m.val_SI * w_mixture_in
+        if self.h2o_in.val:
+            residual += self.inl[1].m.val_SI
+        # residual -= self.outl[0].m.val_SI * self.outl[0].w.val_SI
+        # residual -= self.outl[0].mH2O.val_SI
+        w_mixture_out = w_mix_fluid_data(self.outl[0].fluid_data)
+        residual -= self.outl[0].m.val_SI * w_mixture_out
+        if self.h2o_out.val:
+            residual -= self.outl[1].m.val_SI
         return residual
 
-    def fluid_deriv(self, increment_filter, k, dependents=None):
-        r"""
-        Calculate partial derivatives of fluid balance.
+    def water_fluid_dependents(self):
+        m_dot = self.mass_flow_dependents()
+        # variable_fluids = set(
+        #     [fluid for c in self.inl + self.outl for fluid in c.fluid.is_var]
+        # )
+        return m_dot
 
-        Parameters
-        ----------
-        increment_filter : ndarray
-            Matrix for filtering non-changing variables.
+    # def energy_balance_func(self):
+    #     r"""
+    #     Calculate energy balance.
 
-        k : int
-            Position of derivatives in Jacobian matrix (k-th equation).
-        """
-        i = self.inl[0]
-        for fluid in self.variable_fluids:
-            for o in self.outl:
-                self._partial_derivative(o.m, k, -o.fluid.val[fluid], increment_filter)
-                if fluid in o.fluid.is_var:
-                    self.jacobian[k, o.fluid.J_col[fluid]] = -o.m.val_SI
+    #     Returns
+    #     -------
+    #     residual : list
+    #         Residual value of energy balance.
 
-            self._partial_derivative(i.m, k, i.fluid.val[fluid], increment_filter)
-            if fluid in i.fluid.is_var:
-                self.jacobian[k, i.fluid.J_col[fluid]] = i.m.val_SI
+    #         .. math::
 
-            k += 1
+    #             0 = T_{in} - T_{out,j}\\
+    #             \forall j \in \text{outlets}
+    #     """
+    #     residual = []
+    #     T_in = self.inl[0].calc_T()
+    #     for o in self.outl:
+    #         residual += [T_in - o.calc_T()]
+    #     return residual
 
-    def fluid_dependents(self):
-        return {
-            "scalars": [
-                [c.m for c in self.inl + self.outl]
-                for f in self.variable_fluids
-            ],
-            "vectors": [{
-                c.fluid: set(f) & c.fluid.is_var for c in self.inl + self.outl
-            } for f in self.variable_fluids]
-        }
+    # def energy_balance_deriv(self, increment_filter, k, dependents=None):
+    #     r"""
+    #     Calculate partial derivatives of energy balance.
 
-    def energy_balance_func(self):
-        r"""
-        Calculate energy balance.
+    #     Parameters
+    #     ----------
+    #     increment_filter : ndarray
+    #         Matrix for filtering non-changing variables.
 
-        Returns
-        -------
-        residual : list
-            Residual value of energy balance.
+    #     k : int
+    #         Position of derivatives in Jacobian matrix (k-th equation).
+    #     """
+    #     i = self.inl[0]
+    #     dT_dp_in = 0
+    #     dT_dh_in = 0
+    #     if i.p.is_var:
+    #         # outlet pressure must be variable as well in this case!
+    #         dT_dp_in = dT_mix_dph(i.p.val_SI, i.h.val_SI, i.fluid_data, i.mixing_rule)
+    #     if i.h.is_var:
+    #         dT_dh_in = dT_mix_pdh(i.p.val_SI, i.h.val_SI, i.fluid_data, i.mixing_rule)
 
-            .. math::
+    #     for o in self.outl:
+    #         args = (o.p.val_SI, o.h.val_SI, o.fluid_data, o.mixing_rule)
 
-                0 = T_{in} - T_{out,j}\\
-                \forall j \in \text{outlets}
-        """
-        residual = []
-        T_in = self.inl[0].calc_T()
-        for o in self.outl:
-            residual += [T_in - o.calc_T()]
-        return residual
+    #         dT_dp_out = 0
+    #         if o.p.is_var:
+    #             dT_dp_out = -dT_mix_dph(*args)
+    #         # pressure is always coupled
+    #         self._partial_derivative(i.p, k, dT_dp_in - dT_dp_out)
 
-    def energy_balance_deriv(self, increment_filter, k, dependents=None):
-        r"""
-        Calculate partial derivatives of energy balance.
+    #         if o.h.is_var:
+    #             dT_dh_out = -dT_mix_pdh(*args)
 
-        Parameters
-        ----------
-        increment_filter : ndarray
-            Matrix for filtering non-changing variables.
+    #         # enthalpy is not necessarily coupled
+    #         if i.h._reference_container == o.h._reference_container:
+    #             self._partial_derivative(i.h, k, dT_dh_in - dT_dh_out)
+    #         else:
+    #             self._partial_derivative(i.h, k, dT_dh_in)
+    #             self._partial_derivative(o.h, k, dT_dh_out)
 
-        k : int
-            Position of derivatives in Jacobian matrix (k-th equation).
-        """
-        i = self.inl[0]
-        dT_dp_in = 0
-        dT_dh_in = 0
-        if i.p.is_var:
-            # outlet pressure must be variable as well in this case!
-            dT_dp_in = dT_mix_dph(i.p.val_SI, i.h.val_SI, i.fluid_data, i.mixing_rule)
-        if i.h.is_var:
-            dT_dh_in = dT_mix_pdh(i.p.val_SI, i.h.val_SI, i.fluid_data, i.mixing_rule)
+    #         k += 1
 
-        for o in self.outl:
-            args = (o.p.val_SI, o.h.val_SI, o.fluid_data, o.mixing_rule)
+    # def energy_balance_dependents(self):
+    #     return [
+    #         [self.inl[0].p, self.inl[0].h, o.p, o.h] for o in self.outl
+    #     ]
 
-            dT_dp_out = 0
-            if o.p.is_var:
-                dT_dp_out = -dT_mix_dph(*args)
-            # pressure is always coupled
-            self._partial_derivative(i.p, k, dT_dp_in - dT_dp_out)
 
-            if o.h.is_var:
-                dT_dh_out = -dT_mix_pdh(*args)
+if __name__ == "__main__":
+    from tespy.components import Sink, Source
+    from tespy.connections import HAConnection, Connection
+    from tespy.networks import Network
+    nw = Network()
+    nw.units.set_defaults(**{
+        "pressure": "bar", "temperature": "degC"
+    })
+    so = Source('source')
+    si1 = Sink('sink1')
+    si2 = Sink('sink2')
+    s = HumidityControl('separator', h2o_in=False, h2o_out=True)
+    air_in = HAConnection(so, 'out1', s, 'in1')
+    air_out = HAConnection(s, 'out1', si1, 'in1')
+    h2o_out = Connection(s, 'out2', si2, 'in1')
+    nw.add_conns(air_in, air_out, h2o_out)
+    air_in.set_attr(p=1, T=20, m=5)
+    air_in.set_attr(fluid={'air': 0.99, 'water': 0.01})
+    # air_out.set_attr(m=4)
+    air_out.set_attr(T=20, m=5)
+    h2o_out.set_attr(m=0, T=20, fluid={'water': 1.0})
 
-            # enthalpy is not necessarily coupled
-            if i.h._reference_container == o.h._reference_container:
-                self._partial_derivative(i.h, k, dT_dh_in - dT_dh_out)
-            else:
-                self._partial_derivative(i.h, k, dT_dh_in)
-                self._partial_derivative(o.h, k, dT_dh_out)
-
-            k += 1
-
-    def energy_balance_dependents(self):
-        return [
-            [self.inl[0].p, self.inl[0].h, o.p, o.h] for o in self.outl
-        ]
+    nw.solve('design')
+    print(air_out.fluid.val)
