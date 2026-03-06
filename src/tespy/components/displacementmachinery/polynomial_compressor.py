@@ -658,7 +658,10 @@ class PolynomialCompressor(DisplacementMachine):
                 self.reference_state.val["displacement"] / 3600
                 * self.rpm.val_SI / self.reference_state.val["rpm_displacement"]
             )
-            self.eta_vol.val_SI = i.m.val_SI * i.calc_vol() / displacement
+            if displacement == 0:
+                self.eta_vol.val_SI = 0
+            else:
+                self.eta_vol.val_SI = i.m.val_SI * i.calc_vol() / displacement
 
 
 def _calc_etas_from_polynome(fluid: str, T_evap: float, T_cond: float, reference_state: dict, polynomes: dict) -> dict:

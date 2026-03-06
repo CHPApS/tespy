@@ -279,7 +279,8 @@ class Motor(Component):
         return [self.power_inl[0].E, self.power_outl[0].E]
 
     def calc_parameters(self):
-        self.eta.val_SI = self.power_outl[0].E.val_SI / self.power_inl[0].E.val_SI
+        if self.power_inl[0].E.val_SI > 0.0:
+            self.eta.val_SI = self.power_outl[0].E.val_SI / self.power_inl[0].E.val_SI
         self.delta_power.val_SI = (
             self.power_inl[0].E.val_SI - self.power_outl[0].E.val_SI
         )
