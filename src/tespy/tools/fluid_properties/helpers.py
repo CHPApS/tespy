@@ -49,6 +49,9 @@ def get_pure_fluid(fluid_data):
 
 def single_fluid(fluid_data):
     r"""Return the name of the pure fluid in a fluid vector."""
+    if "_HUMID_AIR" in fluid_data:
+        return None
+
     if get_number_of_fluids(fluid_data) > 1:
         return None
     else:
@@ -360,3 +363,37 @@ def colebrook(reynolds, ks, diameter, darcy_friction_factor, **kwargs):
             / (3.71 * diameter)
         ) + 1 / darcy_friction_factor ** 0.5
     )
+
+
+def _check_fitting_data_structure(x: np.ndarray, y: np.ndarray) -> None:
+    if len(x) != len(y):
+        msg = ""
+        raise ValueError(msg)
+    elif len(x) < 2:
+        msg = ""
+        raise ValueError(msg)
+
+
+def fit_incompressible_viscosity(temperature: np.ndarray, viscosity: np.ndarray) -> tuple:
+    _check_fitting_data_structure(temperature, viscosity)
+
+    x = 1.0 / temperature
+    y = np.log(viscosity)
+
+    return np.polyfit(x, y, 3)
+
+
+def _fit_arrhenius(temperature: np.ndarray, viscosity: np.ndarray) -> tuple:
+    _check_fitting_data_structure(temperature, viscosity)
+    x = 1.0 / temperature
+    y = np.log(viscosity)
+
+    intercept, slope = np.polyfit(x, y, 1)
+
+    return intercept, np.exp(slope)
+
+
+def fit_incompressible_linear(temperature: np.ndarray, y: np.ndarray) -> tuple:
+    _check_fitting_data_structure(temperature, y)
+
+    return np.polyfit(temperature, y, 1)
